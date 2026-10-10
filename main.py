@@ -81,6 +81,19 @@ class AudioTrack(Base):
 
 Base.metadata.create_all(bind=engine)
 
+# Auto-migración de columnas para tablas existentes
+with engine.connect() as conn:
+    for col, col_type in [
+        ("nombre", "VARCHAR(100)"),
+        ("hashed_password", "VARCHAR(255) DEFAULT ''"),
+        ("created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS {col} {col_type};")
+            conn.commit()
+        except Exception:
+            pass
+
 def get_db():
     db = SessionLocal()
     try:
