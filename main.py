@@ -1,30 +1,35 @@
 import os
-import re
+import hashlib
+import secrets
 from datetime import datetime, timedelta
-from typing import Optional, List
+from typing import Optional
 
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Form
+from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, Text
 from sqlalchemy.orm import declarative_base, sessionmaker, Session, relationship
-from passlib.context import CryptContext
 from jose import JWTError, jwt
 
-# --- 1. SEGURIDAD Y JWT ---
+# --- 1. SEGURIDAD Y HASHING NATIVO ---
 SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "clofovoz_music_super_secure_key_2026")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 horas
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
 
-import bcrypt
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 def get_password_hash(password: str) -> str:
-    salt = bcrypt.gensalt()
-    return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
+    salt = secrets.token_hex(16)
+    hashed = hashlib.sha256((salt + password).encode('utf-8')).hexdigest()
+    return f"{salt}${hashed}"
+
+def verify_password(plain_password: str, stored_password: str) -> bool:
+    try:
+        salt, hashed = stored_password.split("$")
+        return hashlib.sha256((salt + plain_password).encode('utf-8')).hexdigest() == hashed
+    except Exception:
+        return False
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
@@ -46,19 +51,18 @@ try:
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     Base = declarative_base()
 except Exception as e:
-    print(f"Error conectando a DB: {e}")
     engine = create_engine("sqlite:///./fallback.db")
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     Base = declarative_base()
 
-# --- 3. MODELOS SQLALCHEMY ---
+# --- 3. MODELOS ---
 class Usuario(Base):
     __tablename__ = "usuarios"
     id = Column(Integer, primary_key=True, index=True)
     nombre = Column(String(100), nullable=True)
     email = Column(String(150), unique=True, index=True, nullable=False)
     hashed_password = Column(String(255), nullable=False)
-    plan = Column(String(50), default="free")  # free, creator, pro
+    plan = Column(String(50), default="free")
     created_at = Column(DateTime, default=datetime.utcnow)
     
     tracks = relationship("AudioTrack", back_populates="propietario")
@@ -84,15 +88,15 @@ def get_db():
     finally:
         db.close()
 
-# --- 4. SCHEMAS PYDANTIC ---
+# --- 4. SCHEMAS ---
 class RegistroSchema(BaseModel):
     nombre: Optional[str] = None
-    email: str
+    email: EmailStr
     password: str
     plan: Optional[str] = "free"
 
 class LoginSchema(BaseModel):
-    email: str
+    email: EmailStr
     password: str
 
 class TokenSchema(BaseModel):
@@ -105,7 +109,7 @@ class TrackCreateSchema(BaseModel):
     genero: Optional[str] = "General"
     descripcion: Optional[str] = None
 
-# --- 5. APLICACIÓN FASTAPI & CORS ---
+# --- 5. FASTAPI APP ---
 app = FastAPI(title="Clofovoz Music SaaS API", version="2.0.0")
 
 app.add_middleware(
@@ -116,7 +120,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Helper para autenticar endpoints protegidos
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -136,42 +139,45 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise credentials_exception
     return user
 
-# --- 6. ENDPOINTS DEL SAAS ---
-
+# --- 6. ENDPOINTS ---
 @app.get("/")
 def root():
     return {"status": "Clofovoz Music SaaS activo", "version": "2.0.0", "env": "Render"}
 
-# Registro con hash de contraseña seguro
 @app.post("/api/auth/register", response_model=TokenSchema)
 def register(req: RegistroSchema, db: Session = Depends(get_db)):
-    existente = db.query(Usuario).filter(Usuario.email == req.email).first()
-    if existente:
-        raise HTTPException(status_code=400, detail="Este correo ya se encuentra registrado.")
-    
-    nuevo_usuario = Usuario(
-        nombre=req.nombre,
-        email=req.email,
-        hashed_password=get_password_hash(req.password),
-        plan=req.plan or "free"
-    )
-    db.add(nuevo_usuario)
-    db.commit()
-    db.refresh(nuevo_usuario)
-    
-    token = create_access_token(data={"sub": nuevo_usuario.email})
-    return {
-        "access_token": token,
-        "token_type": "bearer",
-        "usuario": {
-            "id": nuevo_usuario.id,
-            "nombre": nuevo_usuario.nombre,
-            "email": nuevo_usuario.email,
-            "plan": nuevo_usuario.plan
+    try:
+        existente = db.query(Usuario).filter(Usuario.email == req.email).first()
+        if existente:
+            raise HTTPException(status_code=400, detail="Este correo ya se encuentra registrado.")
+        
+        nuevo_usuario = Usuario(
+            nombre=req.nombre,
+            email=req.email,
+            hashed_password=get_password_hash(req.password),
+            plan=req.plan or "free"
+        )
+        db.add(nuevo_usuario)
+        db.commit()
+        db.refresh(nuevo_usuario)
+        
+        token = create_access_token(data={"sub": nuevo_usuario.email})
+        return {
+            "access_token": token,
+            "token_type": "bearer",
+            "usuario": {
+                "id": nuevo_usuario.id,
+                "nombre": nuevo_usuario.nombre,
+                "email": nuevo_usuario.email,
+                "plan": nuevo_usuario.plan
+            }
         }
-    }
+    except HTTPException:
+        raise
+    except Exception as err:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Error en base de datos: {str(err)}")
 
-# Login con entrega de Token JWT
 @app.post("/api/auth/login", response_model=TokenSchema)
 def login(req: LoginSchema, db: Session = Depends(get_db)):
     user = db.query(Usuario).filter(Usuario.email == req.email).first()
@@ -193,7 +199,6 @@ def login(req: LoginSchema, db: Session = Depends(get_db)):
         }
     }
 
-# Perfil del usuario autenticado
 @app.get("/api/auth/me")
 def get_me(current_user: Usuario = Depends(get_current_user)):
     return {
@@ -204,7 +209,6 @@ def get_me(current_user: Usuario = Depends(get_current_user)):
         "created_at": current_user.created_at
     }
 
-# Crear o subir pista/audio asociada al usuario
 @app.post("/api/tracks")
 def create_track(
     track_data: TrackCreateSchema,
@@ -222,7 +226,6 @@ def create_track(
     db.refresh(track)
     return {"mensaje": "Pista registrada con éxito", "track_id": track.id, "titulo": track.titulo}
 
-# Listar pistas del usuario autenticado
 @app.get("/api/tracks")
 def get_user_tracks(
     current_user: Usuario = Depends(get_current_user),
