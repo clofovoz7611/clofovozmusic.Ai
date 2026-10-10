@@ -8,11 +8,11 @@ from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel, EmailStr
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, Text
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, Text, text
 from sqlalchemy.orm import declarative_base, sessionmaker, Session, relationship
 from jose import JWTError, jwt
 
-# --- 1. SEGURIDAD Y HASHING NATIVO ---
+# --- 1. CONFIGURACIÓN JWT Y SEGURIDAD ---
 SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "clofovoz_music_super_secure_key_2026")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
@@ -21,13 +21,13 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 def get_password_hash(password: str) -> str:
     salt = secrets.token_hex(16)
-    hashed = hashlib.sha256((salt + password).encode('utf-8')).hexdigest()
+    hashed = hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
     return f"{salt}${hashed}"
 
 def verify_password(plain_password: str, stored_password: str) -> bool:
     try:
         salt, hashed = stored_password.split("$")
-        return hashlib.sha256((salt + plain_password).encode('utf-8')).hexdigest() == hashed
+        return hashlib.sha256((salt + plain_password).encode("utf-8")).hexdigest() == hashed
     except Exception:
         return False
 
@@ -37,7 +37,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-# --- 2. BASE DE DATOS POSTGRESQL ---
+# --- 2. BASE DE DATOS Y CONEXIÓN ---
 raw_url = os.environ.get("DATABASE_URL", "sqlite:///./local.db")
 clean_url = raw_url.strip().strip("'").strip('"').strip()
 
@@ -79,20 +79,16 @@ class AudioTrack(Base):
     
     propietario = relationship("Usuario", back_populates="tracks")
 
-Base.metadata.create_all(bind=engine)
+# Sincronización y migración automática de columnas en PostgreSQL
+try:
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS nombre VARCHAR(100);"))
+        conn.execute(text("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS hashed_password VARCHAR(255) DEFAULT '';"))
+        conn.execute(text("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;"))
+except Exception:
+    pass
 
-# Auto-migración de columnas para tablas existentes
-with engine.connect() as conn:
-    for col, col_type in [
-        ("nombre", "VARCHAR(100)"),
-        ("hashed_password", "VARCHAR(255) DEFAULT ''"),
-        ("created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
-    ]:
-        try:
-            conn.execute(f"ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS {col} {col_type};")
-            conn.commit()
-        except Exception:
-            pass
+Base.metadata.create_all(bind=engine)
 
 def get_db():
     db = SessionLocal()
@@ -101,7 +97,7 @@ def get_db():
     finally:
         db.close()
 
-# --- 4. SCHEMAS ---
+# --- 4. ESQUEMAS PYDANTIC ---
 class RegistroSchema(BaseModel):
     nombre: Optional[str] = None
     email: EmailStr
@@ -122,7 +118,7 @@ class TrackCreateSchema(BaseModel):
     genero: Optional[str] = "General"
     descripcion: Optional[str] = None
 
-# --- 5. FASTAPI APP ---
+# --- 5. APLICACIÓN FASTAPI ---
 app = FastAPI(title="Clofovoz Music SaaS API", version="2.0.0")
 
 app.add_middleware(
