@@ -5,11 +5,15 @@ from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, Integer, String
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./local.db")
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+raw_url = os.environ.get("DATABASE_URL", "sqlite:///./local.db").strip()
 
-engine = create_engine(DATABASE_URL)
+# Ajustar esquema para SQLAlchemy con psycopg2
+if raw_url.startswith("postgres://"):
+    raw_url = raw_url.replace("postgres://", "postgresql+psycopg2://", 1)
+elif raw_url.startswith("postgresql://"):
+    raw_url = raw_url.replace("postgresql://", "postgresql+psycopg2://", 1)
+
+engine = create_engine(raw_url)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
