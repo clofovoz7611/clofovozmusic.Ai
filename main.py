@@ -17,7 +17,33 @@ SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "clofovoz_music_super_secure_key_2
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+from fastapi.security import APIKeyHeader
+
+api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
+
+def get_current_user(token: Optional[str] = Depends(api_key_header), db: Session = Depends(get_db)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Credenciales de acceso no válidas",
+    )
+    if not token:
+        raise credentials_exception
+
+    # Limpiar prefijo 'Bearer ' si se incluye
+    token_clean = token.replace("Bearer ", "").replace("bearer ", "").strip()
+
+    try:
+        payload = jwt.decode(token_clean, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        if email is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+
+    user = db.query(Usuario).filter(Usuario.email == email).first()
+    if user is None:
+        raise credentials_exception
+    return user
 
 def get_password_hash(password: str) -> str:
     salt = secrets.token_hex(16)
