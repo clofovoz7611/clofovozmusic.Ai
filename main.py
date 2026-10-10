@@ -1,29 +1,40 @@
 import os
-from fastapi import FastAPI, Depends, HTTPException, status
+import re
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, Integer, String
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 
-raw_url = os.environ.get("DATABASE_URL", "sqlite:///./local.db").strip()
+# 1. Obtener y limpiar rigurosamente la variable de entorno
+raw_url = os.environ.get("DATABASE_URL", "sqlite:///./local.db")
+# Eliminar comillas simples, dobles, espacios y saltos de línea accidentales
+clean_url = raw_url.strip().strip("'").strip('"').strip()
 
-# Ajustar esquema para SQLAlchemy con psycopg2
-if raw_url.startswith("postgres://"):
-    raw_url = raw_url.replace("postgres://", "postgresql+psycopg2://", 1)
-elif raw_url.startswith("postgresql://"):
-    raw_url = raw_url.replace("postgresql://", "postgresql+psycopg2://", 1)
+# 2. Corregir protocolo para compatibilidad con SQLAlchemy
+if clean_url.startswith("postgres://"):
+    clean_url = clean_url.replace("postgres://", "postgresql+psycopg2://", 1)
+elif clean_url.startswith("postgresql://") and not clean_url.startswith("postgresql+psycopg2://"):
+    clean_url = clean_url.replace("postgresql://", "postgresql+psycopg2://", 1)
 
-engine = create_engine(raw_url)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
+try:
+    engine = create_engine(clean_url, pool_pre_ping=True)
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    Base = declarative_base()
 
-class Usuario(Base):
-    __tablename__ = "usuarios"
-    id = Column(Integer, primary_key=True, index=True)
-    email = Column(String, unique=True, index=True, nullable=False)
-    plan = Column(String, default="standard")
+    class Usuario(Base):
+        __tablename__ = "usuarios"
+        id = Column(Integer, primary_key=True, index=True)
+        email = Column(String, unique=True, index=True, nullable=False)
+        plan = Column(String, default="standard")
 
-Base.metadata.create_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+except Exception as e:
+    print(f"Error inicializando la base de datos: {e}")
+    # Fallback seguro para evitar que el servicio se caiga por completo
+    engine = create_engine("sqlite:///./fallback.db")
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    Base = declarative_base()
 
 app = FastAPI(title="Clofovoz Music SaaS API", version="1.0.0")
 
