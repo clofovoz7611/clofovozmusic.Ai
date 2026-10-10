@@ -87,12 +87,12 @@ def get_db():
 # --- 4. SCHEMAS PYDANTIC ---
 class RegistroSchema(BaseModel):
     nombre: Optional[str] = None
-    email: EmailStr
+    email: str
     password: str
     plan: Optional[str] = "free"
 
 class LoginSchema(BaseModel):
-    email: EmailStr
+    email: str
     password: str
 
 class TokenSchema(BaseModel):
